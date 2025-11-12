@@ -107,9 +107,11 @@ async def query_healthcare_info(request: QueryRequest):
         try:
             rag_system = HealthcareRAG()
         except Exception as e:
+            # Log the error but don't expose details to user
+            print(f"Failed to initialize RAG system: {str(e)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to initialize RAG system: {str(e)}"
+                detail="Failed to initialize RAG system. Please check server logs."
             )
     
     try:
@@ -119,9 +121,11 @@ async def query_healthcare_info(request: QueryRequest):
         )
         return QueryResponse(**result)
     except Exception as e:
+        # Log the error but don't expose details to user
+        print(f"Query failed: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Query failed: {str(e)}"
+            detail="Query processing failed. Please try again."
         )
 
 
@@ -142,9 +146,11 @@ async def add_document(request: DocumentRequest):
         try:
             rag_system = HealthcareRAG()
         except Exception as e:
+            # Log the error but don't expose details to user
+            print(f"Failed to initialize RAG system: {str(e)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to initialize RAG system: {str(e)}"
+                detail="Failed to initialize RAG system. Please check server logs."
             )
     
     try:
@@ -157,9 +163,11 @@ async def add_document(request: DocumentRequest):
             "document_id": doc_id
         }
     except Exception as e:
+        # Log the error but don't expose details to user
+        print(f"Failed to add document: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to add document: {str(e)}"
+            detail="Failed to add document. Please try again."
         )
 
 
@@ -175,9 +183,11 @@ async def get_stats():
         stats = rag_system.get_stats()
         return stats
     except Exception as e:
+        # Log the error but don't expose details to user
+        print(f"Failed to get stats: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get stats: {str(e)}"
+            detail="Failed to retrieve statistics. Please try again."
         )
 
 
