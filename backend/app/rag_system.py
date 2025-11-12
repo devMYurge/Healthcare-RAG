@@ -248,8 +248,9 @@ class HealthcareRAG:
                 "status": "active"
             }
         except Exception as e:
+            # Log the error but don't expose details in response
+            print(f"Error getting stats: {str(e)}")
             return {
                 "document_count": 0,
-                "error": str(e),
                 "status": "error"
             }
