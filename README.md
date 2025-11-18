@@ -44,36 +44,95 @@ Healthcare-RAG/
 - Node.js 16 or higher
 - npm or yarn
 
-### Backend Setup
+### Backend Setup (centralized Python environment)
 
-1. **Navigate to backend directory**:
-   ```bash
-   cd backend
-   ```
+This repository uses a centralized Python virtual environment at the project root (`.venv`) and a single `requirements.txt` for Python dependencies.
 
-2. **Create virtual environment**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+Recommended (one-step) setup
 
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
 
-4. **Create environment file** (optional):
-   ```bash
-   cp .env.example .env
-   # Edit .env if you want to customize settings
-   ```
+1. Make the helper script executable and run it from the repo root. The script will create `.venv`, install `requirements.txt`, and run a quick import verification:
 
-5. **Start the backend server**:
-   ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-   ```
+```bash
+chmod +x ./scripts/setup_env.sh
+./scripts/setup_env.sh
+```
 
-   The backend API will be available at `http://localhost:8000`
+If you prefer a faster install that skips the import verification step, run:
+
+```bash
+./scripts/setup_env.sh --no-verify
+```
+
+Manual setup (alternative)
+
+1. Create and activate the venv:
+```bash
+python3 -m venv ./.venv
+source ./.venv/bin/activate
+```
+
+2. Install dependencies:
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+3. (Optional) Create environment file:
+```bash
+cp backend/.env.example backend/.env
+# Edit backend/.env if you want to customize settings
+```
+
+4. Start the backend server (from repo root):
+```bash
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The backend API will be available at `http://localhost:8000`.
+
+Verify the environment
+
+After installing, you can run a quick import verification script which reports missing or failing imports:
+
+```bash
+python3 scripts/verify_env.py
+```
+
+Exit code 0 indicates all checked modules imported successfully; non-zero indicates issues to fix.
+
+### Development environment (canonical)
+
+We recommend using the centralized virtualenv at the repo root (`.venv`) for
+local development and CI. Quick summary:
+
+- Create & activate (zsh):
+
+  ```bash
+  python3 -m venv ./.venv
+  source ./.venv/bin/activate
+  ```
+
+- Install pinned dependencies and verify imports:
+
+  ```bash
+  pip install --upgrade pip setuptools wheel
+  pip install -r requirements.txt
+  python3 scripts/verify_env.py
+  ```
+
+- Notes:
+  - We pin several packages for reproducibility (example pins in `requirements.txt`: `pydantic==2.12.4`, `PyMuPDF==1.26.6`, `langchain==1.0.5`).
+  - You may see a NumPy ABI warning when mixing extensions compiled against
+    different NumPy major versions. If you encounter crashes, either pin
+    `numpy<2` or rebuild the affected native extensions. If you plan to use
+    `opencv-python`, note that some OpenCV releases expect `numpy>=2`.
+  - To produce an exact lock file for CI, run:
+
+    ```bash
+    ./.venv/bin/pip freeze > requirements.lock
+    ```
+
 
 ### Frontend Setup
 
@@ -178,6 +237,9 @@ CHROMA_PERSIST_DIR=./backend/data/chroma
 
 # Model Configuration
 EMBEDDING_MODEL=all-MiniLM-L6-v2
+
+# Internet fallback (optional)
+USE_INTERNET=false
 ```
 
 ### Frontend Configuration
