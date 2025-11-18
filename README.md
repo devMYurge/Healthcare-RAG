@@ -330,6 +330,32 @@ npm run build
 - **ChromaDB**: Vector database for semantic search
 - **Sentence Transformers**: State-of-the-art text embeddings
 - **LangChain**: Framework for LLM applications
+
+LangChain compatibility note
+---------------------------
+This project includes small compatibility fallbacks to support different
+LangChain layouts (for example `langchain`, `langchain_classic`, and
+`langchain_core`). If you are running into import errors referencing
+`langchain.retrievers`, `langchain.storage`, or `langchain.docstore`, you
+have two options:
+
+- Preferred (robust): keep the code as-is — the repository implements
+  fallbacks and a small local retriever that works with common LangChain
+  vectorstores (Chroma). No further action required.
+- Alternative (reproducible): install the compatibility helper package
+  `langchain-classic` which provides older LangChain module layouts and
+  will make older import paths available. To add it to your environment:
+
+```bash
+# from the repo root, using the canonical venv
+source ./.venv/bin/activate
+pip install langchain-classic
+```
+
+We also added `langchain-classic` to `requirements.txt` as an optional
+compatibility package. Pining to a single LangChain distribution is a
+valid approach; if you prefer that, tell me and I will pin a specific
+package+version and update the Quickstart accordingly.
 - **Uvicorn**: ASGI server for production
 
 ### Frontend

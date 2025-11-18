@@ -33,6 +33,10 @@ PyPDF2>=3.0.1
 tqdm>=4.66.1
 PyMuPDF==1.26.6
 langchain==1.0.5
+# Optional compatibility package for older LangChain import paths
+# (provides `langchain_classic` layout). Install if you rely on older
+# LangChain submodule locations. See README for details.
+langchain-classic
 
 # Environment and Configuration
 python-dotenv==1.0.1
