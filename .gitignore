@@ -1,5 +1,24 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+/venv/
+backend/venv/
+
+# Node
+/frontend/node_modules/
+frontend/dist/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+# Byte-compiled / optimized / DLL files
+__pycache__/
 *.py[codz]
 *$py.class
 
@@ -219,3 +238,6 @@ frontend/dist/
 
 # Backend data
 backend/data/
+
+# Local conda environment
+.conda/
