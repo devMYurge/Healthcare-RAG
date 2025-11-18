@@ -1,0 +1,43 @@
+# Centralized Python dependencies for the Healthcare-RAG project
+# This merges backend dependencies and common tooling used during development.
+
+# FastAPI and Server Dependencies
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+pydantic==2.6.1
+python-multipart==0.0.9
+
+# Vector Database and Embeddings
+chromadb==0.4.22
+sentence-transformers==2.3.1
+
+# Model & Transformers (required by sentence-transformers/LLM pipelines)
+torch>=2.2.0
+transformers>=4.40.0
+huggingface-hub>=0.17.4
+
+# ONNX / runtime (optional but used in some inference paths)
+onnxruntime>=1.16.1
+pyarrow>=12.0.1
+
+# Data Processing
+numpy==1.26.4
+pandas==2.2.0
+
+# Hugging Face datasets (used by backend data utilities)
+datasets==4.4.1
+
+# Utilities & IO
+requests>=2.31.0
+PyPDF2>=3.0.1
+tqdm>=4.66.1
+PyMuPDF
+langchain
+
+# Environment and Configuration
+python-dotenv==1.0.1
+
+# Dev / Test helpers
+pytest>=7.4.0
+
+# NOTE: Frontend Node dependencies remain in frontend/package.json
