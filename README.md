@@ -24,7 +24,7 @@ Healthcare-RAG/
 ├── backend/                 # FastAPI backend
 │   ├── app/
 │   │   ├── main.py         # API endpoints
-│   │   └── rag_system.py   # RAG implementation
+│   │   └── rag_impl.py   # RAG implementation (migrated from rag_system.py)
 │   ├── data/               # Vector database storage
 │   └── requirements.txt    # Python dependencies
 ├── frontend/               # React frontend

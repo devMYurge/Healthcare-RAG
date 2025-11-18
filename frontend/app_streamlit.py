@@ -1,7 +1,7 @@
 # app_streamlit.py
 import streamlit as st
-from rag_pipeline.retriever import retrieve
-from rag_pipeline.generator import generate_answer
+from backend.app.rag_pipeline.retriever import retrieve
+from backend.app.rag_pipeline.generator import generate_answer
 # Initialize your LLM/VLM (omitted for brevity)
 
 st.set_page_config(page_title="Healthcare RAG", layout="wide")

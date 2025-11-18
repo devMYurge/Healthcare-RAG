@@ -25,7 +25,7 @@ docker-compose down
 
 ### Option 2: Automated Script
 
-Use the provided startup script:
+Use the provided startup script which prefers the canonical project virtualenv `./.venv`:
 
 ```bash
 chmod +x start.sh
@@ -34,23 +34,25 @@ chmod +x start.sh
 
 The script will:
 1. Check for Docker and offer to use it
-2. Set up Python virtual environment
-3. Install all dependencies
+2. Create or reuse the project virtual environment at `./.venv`
+3. Install Python dependencies from `requirements.txt`
 4. Start both backend and frontend servers
 
 ### Option 3: Manual Setup
 
 #### Backend
 
+This project uses a canonical virtual environment at the repository root: `./.venv`.
+
 ```bash
 cd backend
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Create (or reuse) the project virtual environment
+python3 -m venv ../.venv
+source ../.venv/bin/activate  # On Windows: ..\.venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies from the repo root requirements file
+pip install -r ../requirements.txt
 
 # Start the server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

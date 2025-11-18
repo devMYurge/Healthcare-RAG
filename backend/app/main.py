@@ -10,7 +10,7 @@ from typing import List, Optional
 import os
 from dotenv import load_dotenv
 
-from .rag_system import HealthcareRAG
+from .rag_impl import HealthcareRAG
 
 # Load environment variables
 load_dotenv()

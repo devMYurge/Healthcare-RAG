@@ -10,7 +10,7 @@ Successfully implemented a complete Healthcare RAG (Retrieval-Augmented Generati
 
 **Files Created:**
 - `backend/app/main.py` - FastAPI REST API with healthcare endpoints
-- `backend/app/rag_system.py` - RAG implementation with ChromaDB
+- `backend/app/rag_impl.py` - RAG implementation with ChromaDB (migrated from rag_system.py)
 - `backend/app/__init__.py` - Package initialization
 - `backend/requirements.txt` - Python dependencies
 - `backend/.env.example` - Environment configuration template
@@ -227,7 +227,7 @@ Healthcare-RAG/
 │   ├── app/
 │   │   ├── __init__.py
 │   │   ├── main.py (186 lines)
-│   │   └── rag_system.py (255 lines)
+│   │   └── rag_impl.py (255 lines)
 │   ├── data/ (for vector DB)
 │   ├── .env.example
 │   ├── Dockerfile

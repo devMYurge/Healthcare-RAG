@@ -1,0 +1,93 @@
+#cloud-config
+# EC2 user-data (cloud-init)
+# This cloud-init will:
+#  - wait for an attached block device (default /dev/xvdf) and format/mount it to /data
+#  - install Docker, Docker Compose, and Git
+#  - clone or update the Healthcare-RAG repo into /home/ubuntu/Healthcare-RAG
+#  - start the application using docker-compose -f docker-compose.aws.yml
+
+write_files:
+  - path: /home/ubuntu/startup.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      exec > /var/log/startup.log 2>&1
+      echo "Starting instance startup script"
+
+      DEVICE=${DEVICE:-/dev/xvdf}
+      MNT=/data
+      REPO=${REPO:-https://github.com/devMYurge/Healthcare-RAG.git}
+      BRANCH=${BRANCH:-main}
+      COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.aws.yml}
+
+      # Wait for block device to appear (30s)
+      for i in $(seq 1 30); do
+        if [ -b "$DEVICE" ]; then
+          echo "Found device $DEVICE"
+          break
+        fi
+        echo "Waiting for device $DEVICE... ($i)"
+        sleep 1
+      done
+
+      if [ -b "$DEVICE" ]; then
+        # If device has no filesystem, make one
+        if ! blkid "$DEVICE" >/dev/null 2>&1; then
+          echo "Formatting $DEVICE as ext4"
+          mkfs -t ext4 "$DEVICE"
+        else
+          echo "$DEVICE already has filesystem"
+        fi
+
+        mkdir -p "$MNT"
+        mountpoint -q "$MNT" || mount "$DEVICE" "$MNT"
+        chown -R ubuntu:ubuntu "$MNT" || true
+        echo "Mounted $DEVICE at $MNT"
+      else
+        echo "Device $DEVICE not found; continuing without mounting persistent storage"
+      fi
+
+      # Install prerequisites and Docker
+      if ! command -v docker >/dev/null 2>&1; then
+        apt-get update -y
+        apt-get install -y docker.io git
+        systemctl enable --now docker
+      else
+        echo "Docker already installed"
+      fi
+
+      # Install docker-compose (standalone binary) if not present
+      if [ ! -x /usr/local/bin/docker-compose ]; then
+        curl -fsSL "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+      fi
+
+      # Clone or update the repo as ubuntu
+      DEST=/home/ubuntu/Healthcare-RAG
+      if [ ! -d "$DEST" ]; then
+        sudo -u ubuntu git clone --branch "$BRANCH" "$REPO" "$DEST"
+      else
+        cd "$DEST"
+        sudo -u ubuntu git fetch --all
+        sudo -u ubuntu git reset --hard "origin/$BRANCH"
+      fi
+
+      chown -R ubuntu:ubuntu "$DEST"
+      cd "$DEST"
+
+      # Ensure persist dir exists
+      if [ -n "${MNT}" ] && [ -d "${MNT}" ]; then
+        mkdir -p "$MNT/chroma"
+        chown -R ubuntu:ubuntu "$MNT/chroma"
+      fi
+
+      # Start services
+      /usr/local/bin/docker-compose -f "$COMPOSE_FILE" up -d --build
+      echo "docker-compose started"
+
+runcmd:
+  - [ bash, -lc, '/home/ubuntu/startup.sh' ]
+
+final_message: "The instance is ready. Check /var/log/startup.log for details."

@@ -37,31 +37,28 @@ echo ""
 echo "📦 Setting up local development environment..."
 echo ""
 
-# Backend setup
-echo "🔧 Setting up backend..."
-cd backend
-
-if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
+# Backend setup (centralized venv at project root)
+echo "🔧 Setting up backend using centralized virtualenv..."
+if [ ! -d ".venv" ]; then
+    echo "Creating project virtual environment at ./.venv..."
+    python3 -m venv ./.venv
 fi
 
-echo "Activating virtual environment..."
-source venv/bin/activate
+echo "Activating project virtual environment..."
+source ./.venv/bin/activate
 
-echo "Installing Python dependencies..."
+echo "Installing Python dependencies from top-level requirements.txt (if missing)..."
 pip install -r requirements.txt
 
 echo "✅ Backend setup complete!"
 echo ""
 
-# Start backend in background
+# Start backend in background (run from repo root but use module path)
 echo "🚀 Starting backend server..."
-uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+./.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 echo "Backend running with PID: $BACKEND_PID"
 
-cd ..
 
 # Frontend setup
 echo ""

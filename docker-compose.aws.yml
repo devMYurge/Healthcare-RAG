@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  backend:
+    image: healthcare-rag-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: healthcare-rag-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - CHROMA_PERSIST_DIR=/data/chroma
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+    volumes:
+      - backend-data:/data
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+    driver: local
+    # On AWS EC2, bind this volume to a mounted EBS or EFS path by using a
+    # docker -v host_path:container_path override when running docker-compose
+    # or configure the Docker daemon to use a specific local driver path.
