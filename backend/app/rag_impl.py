@@ -16,6 +16,9 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import re
+import json
+from .model_manager import ModelManager
 
 # --- Embedded ingestion & retrieval helpers (merged from rag_pipeline/ingest_all.py & retriever.py)
 import hashlib
@@ -24,6 +27,15 @@ try:
     from PIL import Image
 except Exception:
     Image = None
+try:
+    from rank_bm25 import BM25Okapi
+except Exception:
+    BM25Okapi = None
+try:
+    from sentence_transformers import CrossEncoder
+    CROSS_ENCODER_AVAILABLE = True
+except Exception:
+    CROSS_ENCODER_AVAILABLE = False
 
 
 def _hash_content(s: str) -> str:
@@ -36,9 +48,10 @@ class ChromaIngestor:
     Features: upsert_text, upsert_table (CSV), upsert_image, ingest_pdf.
     """
 
-    def __init__(self, client: chromadb.Client, embedding_model: SentenceTransformer, persist_dir: Optional[str] = None):
+    def __init__(self, client: chromadb.Client, embedding_model: SentenceTransformer, persist_dir: Optional[str] = None, model_manager: Optional[ModelManager] = None):
         self.client = client
         self.embedding_model = embedding_model
+        self.model_manager = model_manager
         # ensure collections exist
         self.text_collection = self._get_or_create_collection("text_docs")
         self.table_collection = self._get_or_create_collection("table_docs")
@@ -85,12 +98,28 @@ class ChromaIngestor:
         if Image is None or np is None:
             raise RuntimeError("Pillow and numpy are required to ingest images")
         img = Image.open(image_path).convert("RGB")
-        arr = np.array(img)
-        # For simplicity embed the image via text-model encode of filename (placeholder)
-        emb = self.embed_text([os.path.basename(image_path)])
+        # Prefer using ModelManager's image embedder if available
+        embeddings = None
+        try:
+            if self.model_manager is not None and hasattr(self.model_manager, 'embed_image'):
+                img_emb = self.model_manager.embed_image(image_path)
+                if img_emb is not None:
+                    # ensure embeddings is a list-of-vectors for upsert
+                    if isinstance(img_emb[0], (float, int)):
+                        embeddings = [img_emb]
+                    else:
+                        embeddings = [list(img_emb)]
+        except Exception:
+            embeddings = None
+
+        # Fallback: embed via text embedder on filename or a short caption
+        if embeddings is None:
+            caption = os.path.basename(image_path)
+            embeddings = self.embed_text([caption])
+
         if metadata is None:
             metadata = {}
-        self.image_collection.upsert(ids=[f"{doc_id}_img"], embeddings=emb, metadatas=[metadata], documents=[image_path])
+        self.image_collection.upsert(ids=[f"{doc_id}_img"], embeddings=embeddings, metadatas=[metadata], documents=[image_path])
         return [f"{doc_id}_img"]
 
     def ingest_pdf(self, doc_id_prefix: str, pdf_path: str, metadata: Optional[Dict] = None):
@@ -231,8 +260,14 @@ class HealthcareRAG:
             )
             print(f"Created new collection: {collection_name}")
 
+        # Multimodal / model manager (handles LLM routing + optional image embed)
+        try:
+            self.model_manager = ModelManager(text_embedding_model=self.embedding_model)
+        except Exception:
+            self.model_manager = None
+
         # Initialize pipeline helpers (ingestor + retriever) merged from rag_pipeline
-        self.ingestor = ChromaIngestor(self.client, self.embedding_model)
+        self.ingestor = ChromaIngestor(self.client, self.embedding_model, model_manager=self.model_manager)
         self.retriever = ChromaCollectionsRetriever(self.client)
 
         # If the primary collection is empty, populate defaults and try ingest paths
@@ -245,6 +280,24 @@ class HealthcareRAG:
         except Exception:
             # ignore cases where count() is not supported
             pass
+
+        # Build a BM25 side-index for sparse retrieval if rank_bm25 available
+        try:
+            self._bm25 = None
+            self._bm25_corpus_ids = []
+            self._bm25_docs = {}
+            if BM25Okapi is not None:
+                self._build_bm25_index()
+        except Exception:
+            self._bm25 = None
+
+        # Reranker (cross-encoder) lazy init
+        self.reranker = None
+        self.reranker_name = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        try:
+            self.rerank_topk = int(os.getenv("RERANK_TOPK", "50"))
+        except Exception:
+            self.rerank_topk = 50
 
         # Configure internet fallback (if enabled via env)
         self.allow_internet = os.getenv("USE_INTERNET", "false").lower() in ("1", "true", "yes")
@@ -305,29 +358,45 @@ class HealthcareRAG:
         print(f"Added {len(sample_documents)} sample documents to knowledge base")
 
     def _ingest_local_pdfs(self):
-        """Ingest local PDF files if present in backend/app/data/pdf or backend/data."""
-        # Look for specific named PDFs first
-        candidates = []
-        possible_paths = [
+        """Ingest local PDF files found under project data folders.
+
+        This version searches recursively under `backend/app/data` and `backend/data` so
+        PDFs placed in subdirectories (e.g. `backend/app/data/text/`) are discovered.
+        """
+        # candidate specific files to prefer
+        specific_paths = [
             os.path.join(os.getcwd(), "backend", "app", "data", "patient_diagnoses_medical_jargon.pdf"),
             os.path.join(os.getcwd(), "backend", "app", "data", "doctor_profiles_refined.pdf"),
             os.path.join(os.getcwd(), "backend", "data", "patient_diagnoses_medical_jargon.pdf"),
             os.path.join(os.getcwd(), "backend", "data", "doctor_profiles_refined.pdf"),
         ]
-        # Also ingest any PDFs under backend/app/data
-        candidates += [p for p in possible_paths if os.path.exists(p)]
-        candidates += glob.glob(os.path.join(os.getcwd(), "backend", "app", "data", "*.pdf"))
+
+        candidates = []
+        candidates += [p for p in specific_paths if os.path.exists(p)]
+
+        # Recursively find any PDFs under the app/data and data directories
+        search_dirs = [
+            os.path.join(os.getcwd(), "backend", "app", "data"),
+            os.path.join(os.getcwd(), "backend", "data"),
+        ]
+        for d in search_dirs:
+            if os.path.isdir(d):
+                candidates += glob.glob(os.path.join(d, "**", "*.pdf"), recursive=True)
+
+        # Deduplicate and filter
+        candidates = sorted({p for p in candidates if os.path.exists(p)})
 
         if not candidates:
             print("No local PDFs found to ingest.")
             return
 
-        for path in sorted(set(candidates)):
+        for path in candidates:
             try:
                 meta = {"source_file": os.path.basename(path)}
-                if "patient" in os.path.basename(path).lower():
+                name = os.path.basename(path).lower()
+                if "patient" in name:
                     meta["type"] = "patient_pdf"
-                elif "doctor" in os.path.basename(path).lower():
+                elif "doctor" in name:
                     meta["type"] = "doctor_pdf"
                 else:
                     meta["type"] = "pdf"
@@ -406,6 +475,134 @@ class HealthcareRAG:
                         break
         except Exception:
             pass
+
+        # --- New: ingest the 'aldsouza/healthcare-api-tool-calling' dataset if available
+        try:
+            added_api = 0
+            try:
+                from datasets import load_dataset
+                ds_api = load_dataset("aldsouza/healthcare-api-tool-calling")
+            except Exception:
+                ds_api = None
+
+            if ds_api is not None:
+                # ds_api might be a DatasetDict; try to iterate over its splits
+                def iter_dataset(dset):
+                    if isinstance(dset, dict):
+                        for split in dset.values():
+                            for item in split:
+                                yield item
+                    else:
+                        for item in dset:
+                            yield item
+
+                citation = "@dataset{healthcare_api_tool_calling,\n  title={Healthcare API Tool Calling Dataset},\n  author={Your Name},\n  year={2024},\n  url={https://huggingface.co/datasets/your-username/healthcare-api-tool-calling}\n}"
+
+                for item in iter_dataset(ds_api):
+                    try:
+                        # The dataset schema may vary; pick sensible fields if present
+                        prompt = item.get('input') or item.get('prompt') or item.get('question') or str(item)
+                        output = item.get('output') or item.get('response') or item.get('answer') or ''
+                        text = f"Prompt: {prompt}\n\nResponse: {output}"
+                    except Exception:
+                        text = str(item)
+
+                    meta = {
+                        "type": "dataset_tool_calling",
+                        "source": "aldsouza/healthcare-api-tool-calling",
+                        "citation": citation,
+                    }
+
+                    # Add to collection
+                    try:
+                        emb = self.embedding_model.encode(text).tolist()
+                    except Exception:
+                        emb = self.embedding_model.encode(text)
+                    self.collection.add(
+                        embeddings=[emb],
+                        documents=[text],
+                        metadatas=[meta],
+                        ids=[f"ds_api_{added_api}"]
+                    )
+                    added_api += 1
+                    if added_api >= 200:
+                        break
+                print(f"Ingested {added_api} items from aldsouza/healthcare-api-tool-calling")
+        except Exception:
+            # Ignore dataset ingestion failures; non-critical
+            pass
+
+    def _build_bm25_index(self):
+        """Build a lightweight BM25 index from the primary collection documents.
+
+        This builds an in-memory BM25 index (rank_bm25.BM25Okapi) and maps ids -> (text, metadata).
+        It is used as a sparse retrieval signal fused with dense retrieval from Chroma.
+        """
+        try:
+            # attempt to fetch all documents from the primary collection
+            try:
+                items = self.collection.get()
+            except Exception:
+                # older/newer chroma clients may require explicit kwargs
+                try:
+                    items = self.collection.get(include=['documents','metadatas','ids'])
+                except Exception:
+                    items = None
+
+            docs = []
+            ids = []
+            metadatas = []
+            if items:
+                # items expected to be a dict with keys 'documents','metadatas','ids'
+                docs = items.get('documents', [])
+                metadatas = items.get('metadatas', [])
+                ids = items.get('ids', [])
+
+            # normalize to lists
+            flat_docs = []
+            flat_ids = []
+            flat_metas = []
+            # items may be nested; try to flatten defensively
+            if isinstance(docs, list) and docs:
+                # if docs is list-of-lists, flatten
+                if any(isinstance(d, list) for d in docs):
+                    for group, midx in zip(docs, metadatas if metadatas else [{}]*len(docs)):
+                        # group may be list
+                        for i, d in enumerate(group):
+                            flat_docs.append(d)
+                            # align ids if available
+                            if ids:
+                                try:
+                                    flat_ids.append(ids.pop(0))
+                                except Exception:
+                                    flat_ids.append(f"doc_{len(flat_ids)}")
+                            else:
+                                flat_ids.append(f"doc_{len(flat_ids)}")
+                            flat_metas.append((midx if isinstance(midx, dict) else {}))
+                else:
+                    flat_docs = docs
+                    flat_ids = ids if ids else [f"doc_{i}" for i in range(len(docs))]
+                    flat_metas = metadatas if metadatas else [{} for _ in flat_docs]
+
+            # Build tokenized corpus
+            tokenized = []
+            for i, text in enumerate(flat_docs):
+                txt = text if isinstance(text, str) else str(text)
+                tokens = txt.split()
+                tokenized.append(tokens)
+                self._bm25_docs[flat_ids[i]] = {'text': txt, 'metadata': flat_metas[i]}
+                self._bm25_corpus_ids.append(flat_ids[i])
+
+            if tokenized and BM25Okapi is not None:
+                try:
+                    self._bm25 = BM25Okapi(tokenized)
+                    print(f"Built BM25 index with {len(tokenized)} documents")
+                except Exception as e:
+                    print(f"Failed to build BM25 index: {e}")
+                    self._bm25 = None
+        except Exception as e:
+            print(f"BM25 build error: {e}")
+            self._bm25 = None
     
     def add_document(
         self,
@@ -444,7 +641,9 @@ class HealthcareRAG:
     def query(
         self,
         question: str,
-        max_results: int = 3
+        max_results: int = 3,
+        images: Optional[List[str]] = None,
+        rerank: bool = True,
     ) -> Dict:
         """
         Query the knowledge base and generate an answer
@@ -495,9 +694,39 @@ class HealthcareRAG:
             results = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
         
         # Extract results
-        documents = results['documents'][0] if results['documents'] else []
-        metadatas = results['metadatas'][0] if results['metadatas'] else []
-        distances = results['distances'][0] if results['distances'] else []
+        documents = results.get('documents', [[]])[0]
+        metadatas = results.get('metadatas', [[]])[0]
+        distances = results.get('distances', [[]])[0]
+
+        # Filter out known noisy dataset/tool-calling artifacts by default.
+        # These datasets can contain system prompts and tool-calling examples that
+        # are not useful as factual sources for general user questions.
+        try:
+            filtered_docs = []
+            filtered_metas = []
+            filtered_dists = []
+            for doc, meta, dist in zip(documents, metadatas, distances):
+                mtype = (meta or {}).get('type') if isinstance(meta, dict) else None
+                src = (meta or {}).get('source') if isinstance(meta, dict) else None
+                # textual heuristics: many tool-calling dataset items include prompts
+                doc_text = doc if isinstance(doc, str) else ''
+                noisy_textual = False
+                lt = doc_text.lower()
+                if 'prompt:' in lt or 'you are an intelligent ai assistant' in lt or 'messages' in lt:
+                    noisy_textual = True
+
+                if mtype == 'dataset_tool_calling' or (isinstance(src, str) and 'healthcare-api-tool-calling' in src) or noisy_textual:
+                    # skip these noisy examples unless they are the only results
+                    continue
+                filtered_docs.append(doc)
+                filtered_metas.append(meta)
+                filtered_dists.append(dist)
+
+            # If filtering removed everything, fall back to original results
+            if filtered_docs:
+                documents, metadatas, distances = filtered_docs, filtered_metas, filtered_dists
+        except Exception:
+            pass
         
         if not documents:
             # If nothing found locally and internet fallback is allowed, try a web lookup
@@ -514,10 +743,186 @@ class HealthcareRAG:
                 "sources": [],
                 "confidence": 0.0
             }
-        
-        # Generate answer based on retrieved documents
-        answer = self._generate_answer(question, documents, metadatas)
-        
+        # If BM25 side-index exists, compute sparse scores and fuse with dense
+        fused_candidates = None
+        try:
+            if getattr(self, '_bm25', None) is not None and self._bm25 is not None:
+                # compute sparse scores
+                q_tokens = question.split()
+                sparse_scores = self._bm25.get_scores(q_tokens)
+                # map sparse scores to ids
+                sparse_list = []
+                for idx, sid in enumerate(self._bm25_corpus_ids):
+                    # Skip BM25 entries that appear to be noisy tool-calling examples
+                    try:
+                        bm_meta = self._bm25_docs.get(sid, {}).get('metadata', {})
+                        bm_type = bm_meta.get('type') if isinstance(bm_meta, dict) else None
+                        bm_src = bm_meta.get('source') if isinstance(bm_meta, dict) else None
+                        if bm_type == 'dataset_tool_calling' or (isinstance(bm_src, str) and 'healthcare-api-tool-calling' in bm_src):
+                            continue
+                        # also skip textual prompts
+                        bm_text = self._bm25_docs.get(sid, {}).get('text', '')
+                        if isinstance(bm_text, str) and ('prompt:' in bm_text.lower() or 'you are an intelligent ai assistant' in bm_text.lower()):
+                            continue
+                    except Exception:
+                        pass
+                    sparse_list.append({'id': sid, 'score': float(sparse_scores[idx])})
+
+                # dense results -> ids and dense scores (convert distances to similarity)
+                dense_list = []
+                # we need ids for dense results; try to obtain them from metadatas if present
+                for i, (doc, meta, dist) in enumerate(zip(documents, metadatas, distances)):
+                    did = None
+                    if isinstance(meta, dict):
+                        did = meta.get('id') or meta.get('doc_id')
+                    if did is None:
+                        # fallback to hashing document
+                        did = _hash_content(doc)
+                    dense_list.append({'id': did, 'score': float(1.0 / (1.0 + float(dist))) if dist is not None else 0.0, 'document': doc, 'metadata': meta})
+
+                # build a candidate union of ids
+                candidate_ids = {d['id'] for d in dense_list}
+                candidate_ids.update({s['id'] for s in sparse_list})
+
+                # build score maps
+                dense_map = {d['id']: d['score'] for d in dense_list}
+                sparse_map = {s['id']: s['score'] for s in sparse_list}
+
+                # normalize scores
+                def _normalize(m):
+                    if not m:
+                        return {}
+                    vals = list(m.values())
+                    mx = max(vals)
+                    mn = min(vals)
+                    rng = mx - mn if mx != mn else 1.0
+                    return {k: (v - mn) / rng for k, v in m.items()}
+
+                dense_norm = _normalize(dense_map)
+                sparse_norm = _normalize(sparse_map)
+
+                alpha = 0.7
+                fused = []
+                for cid in candidate_ids:
+                    dsc = dense_norm.get(cid, 0.0)
+                    ssc = sparse_norm.get(cid, 0.0)
+                    fused_score = alpha * dsc + (1 - alpha) * ssc
+                    # resolve document & metadata: prefer dense_list info
+                    doc_text = None
+                    meta = {}
+                    if cid in dense_map:
+                        for d in dense_list:
+                            if d['id'] == cid:
+                                doc_text = d.get('document')
+                                meta = d.get('metadata') or {}
+                                break
+                    if doc_text is None and cid in self._bm25_docs:
+                        doc_text = self._bm25_docs[cid]['text']
+                        meta = self._bm25_docs[cid].get('metadata', {})
+
+                    fused.append({'id': cid, 'score': fused_score, 'document': doc_text, 'metadata': meta})
+
+                # sort fused candidates (before reranking)
+                fused_candidates = sorted([c for c in fused if c.get('document')], key=lambda x: x['score'], reverse=True)
+                # If reranker available, we'll rerank a larger pool later; for now keep the full fused list
+                # (we'll trim after reranking)
+        except Exception:
+            fused_candidates = None
+
+        # If fusion produced candidates, use them as documents; else fall back to dense results
+        reranked_used = False
+        if fused_candidates:
+            # Optionally rerank fused candidates with a cross-encoder for better precision
+            try:
+                # lazy load reranker
+                if rerank and getattr(self, 'reranker', None) is None and CROSS_ENCODER_AVAILABLE:
+                    try:
+                        self.reranker = CrossEncoder(self.reranker_name)
+                    except Exception:
+                        # keep None if loading fails
+                        self.reranker = None
+
+                reranked = None
+                if rerank and getattr(self, 'reranker', None) is not None:
+                    # build a candidate pool up to rerank_topk
+                    pool = fused_candidates[: max(len(fused_candidates), self.rerank_topk)]
+                    texts = [c['document'] for c in pool]
+                    pairs = [[question, t] for t in texts]
+                    try:
+                        scores = self.reranker.predict(pairs)
+                        # attach scores and sort
+                        for i, sc in enumerate(scores):
+                            pool[i]['rerank_score'] = float(sc)
+                        reranked = sorted(pool, key=lambda x: x.get('rerank_score', 0.0), reverse=True)
+                        reranked_used = True
+                    except Exception:
+                        reranked = None
+
+                final_candidates = reranked if reranked is not None else fused_candidates
+
+                # limit to max_results
+                final_candidates = final_candidates[:max_results]
+
+                documents = [c['document'] for c in final_candidates]
+                metadatas = [c.get('metadata', {}) for c in final_candidates]
+                # distances aren't meaningful after fusion/rerank; create proxy distances from fused or rerank score
+                distances = []
+                for c in final_candidates:
+                    if 'rerank_score' in c:
+                        # higher rerank_score -> lower distance proxy
+                        distances.append(1.0 / max(1e-6, c.get('rerank_score')) - 1.0)
+                    else:
+                        distances.append(1.0 / max(1e-6, c.get('score')) - 1.0)
+            except Exception:
+                documents = [c['document'] for c in fused_candidates]
+                metadatas = [c.get('metadata', {}) for c in fused_candidates]
+                distances = [1.0 / max(1e-6, c['score']) - 1.0 for c in fused_candidates]
+        else:
+            reranked_used = False
+        # Telemetry: record reranker scores & selection if enabled
+        telemetry = None
+        try:
+            if os.getenv("ENABLE_TELEMETRY", "false").lower() in ("1", "true", "yes"):
+                telemetry = {"reranked": bool(reranked_used)}
+                # include top-k reranker scores if available
+                if reranked_used and 'reranked' in locals() and reranked is not None:
+                    telemetry_scores = []
+                    for c in (reranked[: self.rerank_topk]):
+                        telemetry_scores.append({"id": c.get('id'), "rerank_score": float(c.get('rerank_score', 0.0))})
+                    telemetry["reranker_scores"] = telemetry_scores
+                elif fused_candidates:
+                    # include fused top-k scores
+                    telemetry_scores = []
+                    for c in (fused_candidates[: self.rerank_topk]):
+                        telemetry_scores.append({"id": c.get('id'), "fused_score": float(c.get('score', 0.0))})
+                    telemetry["fused_scores"] = telemetry_scores
+                # append to a local telemetry log file for offline analysis
+                try:
+                    os.makedirs(os.path.join(os.getcwd(), "backend", "data"), exist_ok=True)
+                    tpath = os.path.join(os.getcwd(), "backend", "data", "telemetry.log")
+                    with open(tpath, "a") as fh:
+                        fh.write(json.dumps({"question": question, "telemetry": telemetry}) + "\n")
+                except Exception:
+                    pass
+        except Exception:
+            telemetry = None
+        # Generate answer based on retrieved documents (also capture model used)
+        answer, used_model = self._generate_answer(question, documents, metadatas, images=images)
+
+        # Decide which model was used: prefer the model reported by the generator (used_model),
+        # else fall back to the ModelManager configured LLM or to the embedding model.
+        model_name = None
+        if used_model:
+            model_name = used_model
+        else:
+            try:
+                if getattr(self, 'model_manager', None) is not None:
+                    model_name = getattr(self.model_manager, 'llm_model_name', None) or None
+            except Exception:
+                model_name = None
+        if not model_name:
+            model_name = getattr(self, 'embedding_model_name', None)
+
         # Format sources
         sources = []
         for i, (doc, metadata, distance) in enumerate(zip(documents, metadatas, distances)):
@@ -526,22 +931,76 @@ class HealthcareRAG:
                 "metadata": metadata,
                 "relevance_score": float(1 / (1 + distance))  # Convert distance to similarity
             })
-        
+
         # Calculate confidence (based on relevance of top result)
         confidence = float(1 / (1 + distances[0])) if distances else 0.0
-        
-        return {
+    # Guardrails: enforce a minimum citation / evidence threshold
+        try:
+            threshold = float(os.getenv("CITATION_THRESHOLD", "0.25"))
+        except Exception:
+            threshold = 0.25
+
+        disclaimer = os.getenv("ANSWER_DISCLAIMER", "I may be incorrect — consult a clinician for medical advice.")
+
+        if confidence < threshold:
+            # Not enough evidence to provide a grounded answer
+            no_answer = (
+                "I don't have sufficient reliable information in the knowledge base to confidently answer that question. "
+                f"{disclaimer}"
+            )
+            return {
+                "answer": no_answer,
+                "sources": sources,
+                "confidence": confidence,
+                "model": model_name,
+                "no_answer": True,
+                "reranked": reranked_used
+            }
+
+        # Ensure the answer includes an explicit citations section. If the generator returned text
+        # without citations, append a citations block derived from the sources we retrieved.
+        try:
+            # If answer already contains the word 'Citation' or 'Source', assume it has citations
+            if isinstance(answer, str) and not ("Citation" in answer or "citation" in answer or "Source:" in answer or "Sources:" in answer):
+                citation_lines = []
+                for s in sources:
+                    meta = s.get("metadata") or {}
+                    cite = meta.get("citation") or meta.get("source") or meta.get("source_file") or meta.get("doc_id") or meta.get("id")
+                    snippet = (s.get("content") or "")[:200]
+                    if cite:
+                        citation_lines.append(f"- {cite}: {snippet}")
+                    else:
+                        citation_lines.append(f"- {meta.get('type','source')}: {snippet}")
+                if citation_lines:
+                    answer = f"{answer}\n\nCitations:\n" + "\n".join(citation_lines)
+                else:
+                    # If no structured citation metadata available, still append short snippets
+                    short_snips = [f"- {s.get('content')[:120]}" for s in sources[:3] if s.get('content')]
+                    if short_snips:
+                        answer = f"{answer}\n\nCitations (snippets):\n" + "\n".join(short_snips)
+        except Exception:
+            # If citation appending fails for any reason, fall back to returning the raw answer
+            pass
+
+        result = {
             "answer": answer,
             "sources": sources,
-            "confidence": confidence
+            "confidence": confidence,
+            "model": model_name,
+            "no_answer": False,
+            "reranked": reranked_used
         }
+        if telemetry is not None:
+            result["telemetry"] = telemetry
+        return result
     
     def _generate_answer(
         self,
         question: str,
         documents: List[str],
         metadatas: List[Dict]
-    ) -> str:
+        , images: Optional[List[str]] = None
+    ) -> Tuple[str, Optional[str]]:
         """
         Generate an answer based on retrieved documents
         
@@ -555,22 +1014,137 @@ class HealthcareRAG:
         """
         # Simple answer generation by combining relevant information
         # In a production system, this would use an LLM like GPT-4
-        
+
+        # Filter out noisy retrieved documents that look like tool-calling prompts
+        try:
+            clean_docs = []
+            clean_metas = []
+            for doc, meta in zip(documents, metadatas):
+                txt = doc if isinstance(doc, str) else ''
+                lt = txt.lower()
+                if 'prompt:' in lt or 'you are an intelligent ai assistant' in lt or 'messages' in lt:
+                    continue
+                clean_docs.append(doc)
+                clean_metas.append(meta)
+            if clean_docs:
+                documents, metadatas = clean_docs, clean_metas
+        except Exception:
+            pass
+
         if not documents:
-            return "I don't have enough information to answer that question."
+            return "I don't have enough information to answer that question.", None
         
-        # Combine information from top documents
-        combined_info = "\n\n".join(documents[:2])  # Use top 2 most relevant
-        
-        # Create a simple answer
-        answer = f"Based on the available healthcare information:\n\n{combined_info}"
-        
-        # Add metadata context if available
+    # Attempt to use a model manager (LLM) for a better multimodal answer.
         conditions = [m.get('condition', '') for m in metadatas if m.get('condition')]
+        try:
+            if self.model_manager is not None:
+                # Build a compact prompt with the question + top documents
+                top_text = "\n\n".join(documents[:4])
+                meta_ctx = f"Related conditions: {', '.join(set(conditions))}" if conditions else ""
+
+                # --- Few-shot augmentation: find similar tool-calling examples from ingested dataset
+                few_shot_examples = []
+                try:
+                    q_emb = self.embedding_model.encode(question).tolist()
+                    try:
+                        ex_results = self.collection.query(query_embeddings=[q_emb], n_results=3, where={"type": "dataset_tool_calling"})
+                    except TypeError:
+                        # Older chroma clients may not support 'where'
+                        ex_results = self.collection.query(query_embeddings=[q_emb], n_results=3)
+                    except Exception:
+                        ex_results = {"documents": [[]]}
+
+                    ex_docs = ex_results.get("documents", [[]])[0] if ex_results else []
+                    for ed in ex_docs:
+                        # ed expected like: "Prompt: ...\n\nResponse: ..."
+                        if not ed:
+                            continue
+                        few_shot_examples.append(ed)
+                except Exception:
+                    few_shot_examples = []
+
+                examples_text = ""
+                if few_shot_examples:
+                    ex_lines = []
+                    for ex in few_shot_examples[:3]:
+                        ex_lines.append("---")
+                        ex_lines.append(ex)
+                    examples_text = "\n\nExamples:\n" + "\n".join(ex_lines) + "\n\n"
+
+                prompt = (
+                    f"You are a helpful medical assistant. Answer the question concisely.\n\n"
+                    f"{examples_text}Question: {question}\n\nContext:\n{top_text}\n\n{meta_ctx}\n\nAnswer:"
+                )
+                gen_out = self.model_manager.generate_answer(prompt, max_tokens=256, images=images)
+                # gen_out may be (text, model_name) or a plain string in older implementations
+                if isinstance(gen_out, tuple):
+                    answer_text, gen_model = gen_out
+                else:
+                    answer_text, gen_model = gen_out, None
+
+                # If the generator returned something that appears to be the LLM fallback
+                # (a local echo rather than a real generated answer), ignore it so we
+                # fall back to a document-grounded synthesis below.
+                if isinstance(answer_text, str) and answer_text.strip().startswith("[Local fallback answer]"):
+                    # treat as no-model-available
+                    answer_text = None
+                    gen_model = None
+
+                # If the generator returned a real-looking answer, return it
+                if answer_text and isinstance(answer_text, str) and len(answer_text.strip()) > 0:
+                    return answer_text, gen_model
+        except Exception:
+            # fall back to simpler answer if LLM generation fails
+            pass
+
+        # Fallback: combine information from top documents
+        # Build a compact, evidence-grounded synthesis from retrieved documents.
+        def extract_relevant_sentences(text, query_terms, max_sents=2):
+            # split into sentences (rough heuristic)
+            sents = re.split(r'(?<=[.!?])\s+', text.strip())
+            selected = []
+            lowered = text.lower()
+            # prefer sentences containing query terms
+            for sent in sents:
+                if len(selected) >= max_sents:
+                    break
+                for t in query_terms:
+                    if t in sent.lower():
+                        selected.append(sent.strip())
+                        break
+            # fallback: take first sentences if none matched
+            if not selected:
+                for sent in sents[:max_sents]:
+                    if sent.strip():
+                        selected.append(sent.strip())
+            return selected[:max_sents]
+
+        query_terms = [t.lower() for t in re.findall(r"\w+", question) if len(t) > 3][:8]
+        pieces = []
+        breakdown = []
+        for i, doc in enumerate(documents[:6]):
+            txt = doc if isinstance(doc, str) else str(doc)
+            sents = extract_relevant_sentences(txt, query_terms, max_sents=2)
+            if sents:
+                pieces.append(' '.join(sents))
+            # include a short snippet and metadata reference
+            meta = metadatas[i] if i < len(metadatas) else {}
+            ref = meta.get('source') or meta.get('source_file') or meta.get('doc_id') or meta.get('id') or meta.get('type') or f'doc_{i}'
+            snippet = (txt[:200] + '...') if len(txt) > 200 else txt
+            breakdown.append(f"Source {i+1} ({ref}): {snippet}")
+
+        summary = ' '.join(pieces) if pieces else (documents[0] if documents else '')
+        answer_lines = ["Based on the retrieved documents, here is a concise summary:", "", summary]
         if conditions:
-            answer += f"\n\nRelated conditions: {', '.join(set(conditions))}"
-        
-        return answer
+            answer_lines.append("")
+            answer_lines.append("Related conditions: " + ', '.join(sorted(set(conditions))))
+
+        answer_lines.append("")
+        answer_lines.append("Breakdown by source:")
+        answer_lines.extend(breakdown[:6])
+
+        answer = '\n'.join(answer_lines)
+        return answer, None
 
     def _search_internet(self, query: str) -> Tuple[str, str]:
         """

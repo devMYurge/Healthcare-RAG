@@ -23,20 +23,22 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### Option 2: Automated Script
+### Option 2: Automated Script (improved)
 
-Use the provided startup script which prefers the canonical project virtualenv `./.venv`:
+Use the provided interactive startup script which prefers the canonical project virtualenv `./.venv`.
 
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-The script will:
-1. Check for Docker and offer to use it
-2. Create or reuse the project virtual environment at `./.venv`
-3. Install Python dependencies from `requirements.txt`
-4. Start both backend and frontend servers
+The script presents a short menu with options:
+- Docker (recommended)
+- Local (backend + React frontend)
+- Local (backend + Streamlit UI)
+- Local (backend only)
+
+The script will create/reuse `./.venv`, install Python dependencies (if present), and start the selected services.
 
 ### Option 3: Manual Setup
 
@@ -68,6 +70,16 @@ npm install
 
 # Start development server
 npm run dev
+```
+
+#### Streamlit (alternative lightweight UI)
+
+If you prefer a quick Python UI instead of the React frontend, you can start Streamlit from the repo root:
+
+```bash
+source ./.venv/bin/activate
+pip install streamlit  # if not installed
+streamlit run frontend/app_streamlit.py
 ```
 
 ## Accessing the Application

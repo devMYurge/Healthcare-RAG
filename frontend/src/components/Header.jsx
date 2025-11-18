@@ -6,10 +6,10 @@ function Header() {
     <header className="header">
       <div className="header-content">
         <div className="logo">
-          <span className="logo-icon">🏥</span>
-          <h1>Healthcare RAG</h1>
+          <span className="logo-icon">🔗</span>
+          <h1>MedLinkAI</h1>
         </div>
-        <p className="tagline">AI-Powered Medical Information Retrieval</p>
+        <p className="tagline">Trusted RAG for doctor recommendations, medical jargon, and disease info</p>
       </div>
     </header>
   );

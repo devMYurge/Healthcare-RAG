@@ -3,12 +3,14 @@ Healthcare RAG API - Main Application
 Provides endpoints for healthcare information retrieval using RAG.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
+import uuid
+import json
 
 from .rag_impl import HealthcareRAG
 
@@ -46,6 +48,9 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[dict]
     confidence: Optional[float] = None
+    model: Optional[str] = None
+    reranked: Optional[bool] = None
+    telemetry: Optional[dict] = None
 
 
 class DocumentRequest(BaseModel):
@@ -90,7 +95,7 @@ async def health_check():
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query_healthcare_info(request: QueryRequest):
+async def query_healthcare_info(request: QueryRequest, rerank: bool = True):
     """
     Query the healthcare database using RAG
     
@@ -117,7 +122,8 @@ async def query_healthcare_info(request: QueryRequest):
     try:
         result = rag_system.query(
             question=request.question,
-            max_results=request.max_results
+            max_results=request.max_results,
+            rerank=rerank
         )
         return QueryResponse(**result)
     except Exception as e:
@@ -169,6 +175,99 @@ async def add_document(request: DocumentRequest):
             status_code=500,
             detail="Failed to add document. Please try again."
         )
+
+
+@app.post("/api/documents/image")
+async def upload_image(file: UploadFile = File(...), metadata: Optional[str] = Form(None)):
+    """
+    Upload an image and add it to the image collection.
+
+    Accepts a multipart/form-data image file and optional metadata (JSON string).
+    """
+    global rag_system
+
+    if rag_system is None:
+        try:
+            rag_system = HealthcareRAG()
+        except Exception as e:
+            print(f"Failed to initialize RAG system: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to initialize RAG system.")
+
+    # Ensure images dir exists
+    images_dir = os.path.join(os.getcwd(), "backend", "data", "images")
+    os.makedirs(images_dir, exist_ok=True)
+
+    # Save uploaded file
+    try:
+        content = await file.read()
+        ext = os.path.splitext(file.filename)[1] or ".jpg"
+        doc_id = f"img_{uuid.uuid4().hex[:8]}"
+        save_path = os.path.join(images_dir, f"{doc_id}{ext}")
+        with open(save_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        print(f"Failed to save uploaded image: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save uploaded image")
+
+    # Parse metadata if provided
+    meta_obj = None
+    if metadata:
+        try:
+            meta_obj = json.loads(metadata)
+        except Exception:
+            meta_obj = {"raw": metadata}
+
+    try:
+        upsert_ids = rag_system.ingestor.upsert_image(doc_id, save_path, metadata=meta_obj)
+        return {"message": "Image uploaded and ingested", "document_id": doc_id, "upsert_ids": upsert_ids}
+    except Exception as e:
+        print(f"Failed to ingest image: {e}")
+        raise HTTPException(status_code=500, detail="Failed to ingest uploaded image")
+
+
+@app.post("/api/query/multimodal", response_model=QueryResponse)
+async def query_multimodal(file: UploadFile = File(None), question: Optional[str] = Form(None), max_results: int = Form(3), rerank: bool = Form(True)):
+    """Multimodal query endpoint.
+
+    Accepts an optional uploaded image plus a form field `question`. The image will be saved
+    to `backend/data/images` and passed to the RAG system as an image path so a multimodal
+    model (if configured) can be used.
+    """
+    global rag_system
+
+    if rag_system is None:
+        try:
+            rag_system = HealthcareRAG()
+        except Exception as e:
+            print(f"Failed to initialize RAG system: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to initialize RAG system.")
+
+    if not question:
+        raise HTTPException(status_code=400, detail="Field 'question' is required.")
+
+    images = None
+    if file is not None:
+        # Save uploaded image
+        images_dir = os.path.join(os.getcwd(), "backend", "data", "images")
+        os.makedirs(images_dir, exist_ok=True)
+        try:
+            content = await file.read()
+            ext = os.path.splitext(file.filename)[1] or ".jpg"
+            doc_id = f"qimg_{uuid.uuid4().hex[:8]}"
+            save_path = os.path.join(images_dir, f"{doc_id}{ext}")
+            with open(save_path, "wb") as f:
+                f.write(content)
+            images = [save_path]
+        except Exception as e:
+            print(f"Failed to save uploaded query image: {e}")
+            raise HTTPException(status_code=500, detail="Failed to save uploaded image")
+
+    try:
+        result = rag_system.query(question=question, max_results=max_results, images=images, rerank=rerank)
+        return QueryResponse(**result)
+    except Exception as e:
+        print(f"Multimodal query failed: {e}")
+        raise HTTPException(status_code=500, detail="Multimodal query failed. Please try again.")
 
 
 @app.get("/api/stats")

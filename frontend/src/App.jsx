@@ -40,47 +40,18 @@ function App() {
         {loading ? (
           <div className="loading-container">
             <div className="spinner"></div>
-            <p>Connecting to Healthcare RAG system...</p>
+            <p>Connecting to MedLinkAI...</p>
           </div>
         ) : healthStatus?.status === 'error' ? (
           <div className="error-container">
             <h2>⚠️ Backend Connection Error</h2>
-            <p>Could not connect to the backend API. Please ensure the backend server is running.</p>
-            <code>cd backend && uvicorn app.main:app --reload</code>
+            <p>Could not connect to the MedLinkAI backend API. Please ensure the backend server is running.</p>
+            <code>cd backend && uvicorn backend.app.main:app --reload</code>
           </div>
         ) : (
-          <div className="content-grid">
-            <div className="chat-section">
+          <div className="content-grid centered">
+            <div className="chat-section centered-card">
               <ChatInterface />
-            </div>
-            <div className="sidebar">
-              <StatsPanel stats={stats} />
-              <div className="info-panel">
-                <h3>About Healthcare RAG</h3>
-                <p>
-                  This AI-powered system uses Retrieval-Augmented Generation (RAG) 
-                  to provide accurate healthcare information by searching through 
-                  a curated medical knowledge base.
-                </p>
-                <div className="features">
-                  <div className="feature">
-                    <span className="feature-icon">🔍</span>
-                    <span>Semantic Search</span>
-                  </div>
-                  <div className="feature">
-                    <span className="feature-icon">🤖</span>
-                    <span>AI-Powered Responses</span>
-                  </div>
-                  <div className="feature">
-                    <span className="feature-icon">📚</span>
-                    <span>Evidence-Based</span>
-                  </div>
-                  <div className="feature">
-                    <span className="feature-icon">⚡</span>
-                    <span>Real-Time Results</span>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         )}

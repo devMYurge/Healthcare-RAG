@@ -7,12 +7,13 @@ function ChatInterface() {
   const [messages, setMessages] = useState([
     {
       type: 'assistant',
-      content: 'Hello! I\'m your Healthcare AI assistant. I can help answer questions about various medical conditions, treatments, and health topics. What would you like to know?',
+      content: 'Hello! I\'m MedLinkAI — your guide for finding recommended doctors, explaining medical jargon, and learning about diseases. How can I help you today?',
       timestamp: new Date(),
     }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -62,14 +63,19 @@ function ChatInterface() {
   };
 
   const suggestedQuestions = [
-    'What is hypertension and how is it treated?',
-    'Tell me about Type 2 diabetes management',
-    'What are the symptoms of asthma?',
-    'How is depression treated?',
+    'Find a recommended doctor for hypertension',
+    'Explain the medical term: bradycardia',
+    'What are the symptoms and treatment of asthma?',
+    'How do I choose a specialist for chronic kidney disease?'
   ];
 
   const handleSuggestionClick = (question) => {
     setInput(question);
+  };
+
+  const handleFileChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    setUploadedFiles(files);
   };
 
   return (
@@ -140,41 +146,37 @@ function ChatInterface() {
           )}
           <div ref={messagesEndRef} />
         </div>
-
-        {messages.length === 1 && (
-          <div className="suggestions">
-            <p className="suggestions-title">Try asking:</p>
-            <div className="suggestions-grid">
-              {suggestedQuestions.map((question, index) => (
-                <button
-                  key={index}
-                  className="suggestion-button"
-                  onClick={() => handleSuggestionClick(question)}
-                >
-                  {question}
-                </button>
-              ))}
+          <div className="bottom-controls">
+            <div className="file-upload">
+              <label className="file-label">
+                📎 Attach files
+                <input type="file" multiple onChange={handleFileChange} />
+              </label>
+              <div className="uploaded-list">
+                {uploadedFiles.map((f, i) => (
+                  <div key={i} className="uploaded-item">{f.name}</div>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
 
-        <form className="input-form" onSubmit={handleSubmit}>
-          <input
-            type="text"
-            className="message-input"
-            placeholder="Ask a healthcare question..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={isLoading}
-          />
-          <button
-            type="submit"
-            className="send-button"
-            disabled={!input.trim() || isLoading}
-          >
-            {isLoading ? '⏳' : '📤'}
-          </button>
-        </form>
+            <form className="input-form" onSubmit={handleSubmit}>
+              <input
+                type="text"
+                className="message-input"
+                placeholder="Ask MedLinkAI... (e.g. 'Find a cardiologist near me')"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                disabled={isLoading}
+              />
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!input.trim() || isLoading}
+              >
+                {isLoading ? '⏳' : '📤'}
+              </button>
+            </form>
+          </div>
       </div>
     </div>
   );

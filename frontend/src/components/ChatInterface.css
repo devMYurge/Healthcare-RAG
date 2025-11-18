@@ -5,13 +5,15 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  height: 700px;
+  flex: 1 1 auto;
+  height: 100%;
 }
 
 .chat-container {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
 .messages-container {
@@ -273,6 +275,37 @@
   background: white;
   border-top: 1px solid #eee;
 }
+
+.bottom-controls{
+  display:flex;
+  flex-direction:column;
+  gap:0.5rem;
+  padding:0.75rem 1rem;
+  background:white;
+  border-top:1px solid #eee;
+}
+
+.file-upload{
+  display:flex;
+  gap:1rem;
+  align-items:center;
+}
+
+.file-label{
+  display:inline-flex;
+  align-items:center;
+  gap:0.5rem;
+  padding:0.5rem 0.75rem;
+  background:#f1f5f9;
+  border-radius:8px;
+  cursor:pointer;
+  font-size:0.9rem;
+}
+
+.file-label input{display:none}
+
+.uploaded-list{display:flex;gap:0.5rem;flex-wrap:wrap}
+.uploaded-item{background:#eef2ff;padding:0.25rem 0.5rem;border-radius:6px;font-size:0.85rem;color:#334155}
 
 .message-input {
   flex: 1;

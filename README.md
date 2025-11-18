@@ -210,6 +210,18 @@ Content-Type: application/json
     "condition": "hypertension"
   }
 }
+
+#### Upload Image
+
+POST an image file (multipart/form-data) to add an image document. Example using curl:
+
+```bash
+curl -X POST "http://localhost:8000/api/documents/image" \
+  -F "file=@/path/to/example.jpg" \
+  -F 'metadata={"source":"test","patient_id":"1234"};type=application/json'
+```
+
+Response includes the created document id and the upserted internal ids.
 ```
 
 #### Get Statistics
@@ -217,6 +229,32 @@ Content-Type: application/json
 GET /api/stats
 ```
 Returns system statistics including document count and model information.
+
+---
+
+API notes — reranker & multimodal
+--------------------------------
+
+The `/api/query` endpoint accepts JSON body `{ "question": "...", "max_results": 3 }` and an optional query parameter `rerank` (default `true`) to enable/disable cross-encoder reranking. Example:
+
+```bash
+curl -X POST "http://localhost:8000/api/query?rerank=true" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is hypertension?","max_results":3}'
+```
+
+Multimodal queries (image + text) are supported via `/api/query/multimodal` which accepts `multipart/form-data` with fields `question` (form field) and optional `file` (image). Example:
+
+```bash
+curl -X POST "http://localhost:8000/api/query/multimodal?rerank=true" \
+  -F "question=What is this skin lesion?" \
+  -F "file=@/path/to/image.jpg"
+```
+
+Telemetry
+---------
+If environment variable `ENABLE_TELEMETRY=true` the server will write a `backend/data/telemetry.log` file containing per-query reranker/fusion summaries. Responses will also include a `telemetry` summary when enabled.
+
 
 ## 🔧 Configuration
 
@@ -240,6 +278,18 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 
 # Internet fallback (optional)
 USE_INTERNET=false
+
+# Model routing / multimodal configuration (optional)
+# - MODEL_DEPLOY_TYPE: "small" or "heavy". When "small" prefer lightweight LLMs for CPU/cloud deployment;
+#   when "heavy" prefer larger local/GPU models.
+# - LLM_MODEL: HuggingFace model id to use for generation (e.g. "mistralai/mistral-7b-v0.1" or "meta-llama/Llama-3-8b").
+# - IMAGE_EMBED_MODEL: Optional SentenceTransformers model id for image embeddings (if set, used during image ingestion).
+# - USE_GPU: "true"/"false" to hint ModelManager to attempt GPU-backed model loading.
+# Example:
+# MODEL_DEPLOY_TYPE=small
+# LLM_MODEL=mistralai/mistral-7b-v0.1
+# IMAGE_EMBED_MODEL=clip-ViT-B-32
+# USE_GPU=false
 ```
 
 ### Frontend Configuration
@@ -248,6 +298,35 @@ Edit `frontend/.env` to customize:
 
 ```env
 VITE_API_URL=http://localhost:8000
+```
+
+## 🔬 Model & Environment Mapping
+
+The table below maps the models used by the RAG system to the environment variables that control them and the primary files where they are loaded or referenced. Paste this into your README or docs where helpful.
+
+| Model / Config | Env var | Default / Example | Purpose | Primary file(s) |
+|---|---:|---|---|---|
+| Text embedding model | EMBEDDING_MODEL | all-MiniLM-L6-v2 | SentenceTransformers model used to embed all text (documents, dataset rows, fallback for images) | `backend/app/rag_impl.py`, `backend/app/model_manager.py` |
+| LLM (text generator) | LLM_MODEL | (none) — set to HF model id to enable | HF text-generation pipeline used by ModelManager for answer generation; optional fallback used when unset | `backend/app/model_manager.py` |
+| Image embedding model | IMAGE_EMBED_MODEL | (none) — set to CLIP-like model id to enable | Optional SentenceTransformer image embedder used to create image embeddings | `backend/app/model_manager.py`, `backend/app/rag_impl.py` |
+| Model deployment preference | MODEL_DEPLOY_TYPE | small | Hint for routing/selection logic in ModelManager (e.g., small vs heavy) | `backend/app/model_manager.py` |
+| Use GPU for HF pipelines | USE_GPU | false | If true and HF models available, pipeline device is set to GPU | `backend/app/model_manager.py` |
+| Chroma persistent path | CHROMA_PERSIST_DIR | ./backend/data/chroma | Where ChromaDB stores vectors on disk | `backend/app/rag_impl.py` |
+| Allow internet fallback | USE_INTERNET | false | If true, `HealthcareRAG._search_internet()` is used when local results are empty | `backend/app/rag_impl.py` |
+| Returned model name (API) | (none) — added to response | N/A | `/api/query` responses include `model` field indicating LLM name or embedding model used | `backend/app/main.py`, `backend/app/rag_impl.py` |
+
+If you prefer CSV format for documentation or automation, use the following CSV content and save it as `docs/model_mapping.csv` in your repo:
+
+```
+Model/Config,Env var,Default/Example,Purpose,Primary file(s)
+Text embedding model,EMBEDDING_MODEL,all-MiniLM-L6-v2,"SentenceTransformers model used to embed text; fallback for other embeddings","backend/app/rag_impl.py; backend/app/model_manager.py"
+LLM (text generator),LLM_MODEL,(none),"HuggingFace text-generation pipeline used by ModelManager; optional","backend/app/model_manager.py"
+Image embedding model,IMAGE_EMBED_MODEL,(none),"Optional SentenceTransformers image embedder for image embeddings","backend/app/model_manager.py; backend/app/rag_impl.py"
+Model deployment preference,MODEL_DEPLOY_TYPE,small,"Hint used when selecting light vs heavy models","backend/app/model_manager.py"
+Use GPU for HF pipelines,USE_GPU,false,"Controls HF pipeline device selection","backend/app/model_manager.py"
+Chroma persistent path,CHROMA_PERSIST_DIR,./backend/data/chroma,"ChromaDB persistence directory","backend/app/rag_impl.py"
+Allow internet fallback,USE_INTERNET,false,"Enables web lookup fallback when no local docs found","backend/app/rag_impl.py"
+Returned model name (API),(none),N/A,"/api/query returns 'model' field with model used (LLM or embedding model)","backend/app/main.py; backend/app/rag_impl.py"
 ```
 
 ## 🧪 Testing the Application
