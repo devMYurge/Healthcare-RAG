@@ -31,8 +31,8 @@ datasets==4.4.1
 requests>=2.31.0
 PyPDF2>=3.0.1
 tqdm>=4.66.1
-PyMuPDF
-langchain
+PyMuPDF==1.26.6
+langchain==1.0.5
 
 # Environment and Configuration
 python-dotenv==1.0.1
